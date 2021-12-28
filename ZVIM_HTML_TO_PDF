@@ -1,0 +1,117 @@
+FUNCTION zvim_html_to_pdf.
+*"----------------------------------------------------------------------
+*"*"Interfaccia locale:
+*"  IMPORTING
+*"     VALUE(I_FILENAME) TYPE  STRING
+*"     VALUE(I_FOLDER) TYPE  STRING OPTIONAL
+*"     VALUE(I_HTML_XSTRING) TYPE  XSTRING
+*"  EXPORTING
+*"     VALUE(E_PDF_XSTRING) TYPE  XSTRING
+*"----------------------------------------------------------------------
+
+  TYPES: BEGIN OF ty_bat,
+           line(255) TYPE c,
+         END OF ty_bat.
+
+  DATA: ls_bat         TYPE ty_bat,
+        lt_bat         TYPE TABLE OF ty_bat,
+        lt_bat_binary  TYPE tabl1024_t,
+        lv_commandname TYPE sxpgcolist-name VALUE 'ZHTML_TO_PDF'.
+
+  CLEAR: ls_bat,
+         lt_bat,
+         lt_bat_binary.
+
+  CONCATENATE i_filename '.html' INTO DATA(html).
+  CONCATENATE i_filename '.pdf'  INTO DATA(pdf).
+  DATA(bat) = 'html_to_pdf.bat'.
+
+  CONCATENATE i_folder html INTO DATA(filename_html).
+  CONCATENATE i_folder bat  INTO DATA(filename_bat).
+  CONCATENATE i_folder pdf  INTO DATA(filename_pdf).
+  CONCATENATE i_folder 'wkhtmltopdf.exe --enable-local-file-access' INTO DATA(command).
+  CONCATENATE i_folder html INTO DATA(command_html).
+  CONCATENATE i_folder pdf INTO DATA(command_pdf).
+
+*  CONCATENATE 'cd' i_folder INTO ls_bat-line SEPARATED BY space.
+*  APPEND ls_bat TO lt_bat.
+*  CLEAR ls_bat.
+  CONCATENATE command command_html command_pdf INTO ls_bat-line SEPARATED BY space.
+  APPEND ls_bat TO lt_bat.
+
+  CALL FUNCTION 'SCMS_TEXT_TO_BINARY'
+    EXPORTING
+      first_line = 1
+      last_line  = 2
+    TABLES
+      text_tab   = lt_bat
+      binary_tab = lt_bat_binary
+    EXCEPTIONS
+      failed     = 1
+      OTHERS     = 2.
+
+  OPEN DATASET filename_bat FOR OUTPUT IN BINARY MODE.
+  IF sy-subrc = 0.
+    LOOP AT lt_bat_binary ASSIGNING FIELD-SYMBOL(<fs_bat_binary>).
+      IF <fs_bat_binary> IS ASSIGNED.
+        TRANSFER <fs_bat_binary>-line TO filename_bat.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+  CLOSE DATASET filename_bat.
+
+  OPEN DATASET filename_html FOR OUTPUT IN BINARY MODE.
+  IF sy-subrc = 0.
+    TRANSFER i_html_xstring TO filename_html.
+  ENDIF.
+  CLOSE DATASET filename_html.
+
+  CALL FUNCTION 'SXPG_COMMAND_EXECUTE'
+    EXPORTING
+      commandname                   = lv_commandname
+*     ADDITIONAL_PARAMETERS         =
+*     OPERATINGSYSTEM               = SY-OPSYS
+*     TARGETSYSTEM                  = SY-HOST
+*     DESTINATION                   =
+*     STDOUT                        = 'X'
+*     STDERR                        = 'X'
+*     TERMINATIONWAIT               = 'X'
+*     TRACE                         =
+*     DIALOG                        =
+* IMPORTING
+*     STATUS                        =
+*     EXITCODE                      =
+* TABLES
+*     EXEC_PROTOCOL                 =
+    EXCEPTIONS
+      no_permission                 = 1
+      command_not_found             = 2
+      parameters_too_long           = 3
+      security_risk                 = 4
+      wrong_check_call_interface    = 5
+      program_start_error           = 6
+      program_termination_error     = 7
+      x_error                       = 8
+      parameter_expected            = 9
+      too_many_parameters           = 10
+      illegal_command               = 11
+      wrong_asynchronous_parameters = 12
+      cant_enq_tbtco_entry          = 13
+      jobcount_generation_error     = 14
+      OTHERS                        = 15.
+  IF sy-subrc = 0.
+    "Tempo necessario per la conversione
+    WAIT UP TO 2 SECONDS.
+
+    OPEN DATASET filename_pdf FOR INPUT IN BINARY MODE.
+    IF sy-subrc = 0.
+      READ DATASET filename_pdf INTO e_pdf_xstring.
+    ENDIF.
+    CLOSE DATASET filename_pdf.
+  ENDIF.
+
+  DELETE DATASET filename_bat.
+  DELETE DATASET filename_html.
+  DELETE DATASET filename_pdf.
+
+ENDFUNCTION.
