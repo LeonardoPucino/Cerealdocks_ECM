@@ -1,0 +1,175 @@
+FUNCTION zecm_wrksp_doc_list.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     REFERENCE(IM_LES_ID) TYPE  /OTX/RMCON_DE_LES_ID
+*"     REFERENCE(IM_BO_TYPE) TYPE  SWEINSTCOU-OBJTYPE
+*"     REFERENCE(IM_BO_KEY) TYPE  SWEINSTCOU-OBJKEY
+*"  EXPORTING
+*"     REFERENCE(EXP_ERROR) TYPE  STRING
+*"  TABLES
+*"      LT_OUTPUT TYPE  ZECM_DOC_T_LIST
+*"----------------------------------------------------------------------
+
+  TYPES: BEGIN OF ty_doclist,
+           nodeid    TYPE /otx/rm_de_cs_node_id,
+           name      TYPE string,
+           mime_type TYPE string,
+           xstring   TYPE xstring,
+         END OF ty_doclist.
+
+  DATA: lv_node_id               TYPE /otx/rm_de_cs_node_id,
+        ot_xecm                  TYPE REF TO /otx/rm_cl_xecm_factory,
+        lv_service               TYPE REF TO /otx/rm_if_xecm_srv,
+        lt_prop                  TYPE /otx/rm_tt_xecm_node_properts,
+        lt_perm                  TYPE /otx/rm_tt_xecm_node_permissio,
+        lt_child_prop            TYPE /otx/rm_tt_xecm_node_properts,
+        lt_child_perm            TYPE /otx/rm_tt_xecm_node_permissio,
+        ls_prop                  TYPE /otx/rm_s_xecm_node_properties,
+        ls_child_prop            TYPE /otx/rm_s_xecm_node_properties,
+        lv_child_id              TYPE /otx/rm_de_cs_node_id,
+        lv_name                  TYPE /otx/rm_de_cs_object_name,
+        ls_doclist               TYPE ty_doclist,
+        lt_doclist               TYPE TABLE OF ty_doclist,
+        lv_blob                  TYPE string,
+        lv_mime_type             TYPE xstring,
+        lv_string                TYPE string,
+        lrcx_root                TYPE REF TO cx_root,
+        lcx_ai_fault             TYPE REF TO cx_ai_system_fault,
+        lcx_wsc_serv             TYPE REF TO /otx/cx_rm_wsc_serv,
+        lcx_rm_exception         TYPE REF TO /otx/rm_cl_exception,
+        lcx_ai_application_fault TYPE REF TO cx_ai_application_fault,
+        l_ex_ref                 TYPE REF TO cx_root,
+        l_msg_text               TYPE string,
+        l_msg_text_tmp           TYPE string,
+        p_gv_les_id              TYPE /otx/rmcon_de_les_id,
+        ls_exec                  TYPE REF TO cx_root.
+
+
+  SELECT SINGLE les_id FROM /otx/rm_telib INTO p_gv_les_id
+    WHERE les_id = im_les_id.
+
+  IF p_gv_les_id IS NOT INITIAL.
+
+    TRY.
+        CALL FUNCTION '/OTX/RM_WSC_GET_WKSP_STATUS'
+          EXPORTING
+            pi_obj_type     = im_bo_type
+            pi_obj_key      = im_bo_key
+          IMPORTING
+            pe_workspace_id = lv_node_id.
+
+      CATCH /otx/cx_rm_wsc INTO ls_exec.
+        MOVE: 'Unable to execute ECM services, Please contact your administrator' TO l_msg_text.
+      CATCH /otx/cx_rm_wsc_serv INTO ls_exec.
+        MOVE: 'Unable to execute ECM services, Please contact your administrator' TO l_msg_text.
+      CATCH cx_ai_system_fault INTO ls_exec.
+        MOVE: 'Error occurred while executing the services , please contact your administrator' TO l_msg_text.
+    ENDTRY.
+
+
+    IF lv_node_id IS NOT INITIAL.
+
+      TRY.
+          CALL METHOD /otx/rm_cl_xecm_factory=>get_xecm_srv
+            EXPORTING
+              pi_les_id   = p_gv_les_id
+            RECEIVING
+              prh_service = lv_service.
+
+        CATCH /otx/cx_rm_xecm_srv INTO l_ex_ref.
+          l_msg_text_tmp = l_ex_ref->get_text( ).
+          IF l_msg_text IS INITIAL.
+            l_msg_text = l_msg_text_tmp.
+          ELSE.
+            CONCATENATE l_msg_text l_msg_text_tmp INTO l_msg_text SEPARATED BY space.
+          ENDIF.
+      ENDTRY.
+
+      TRY.
+          CALL METHOD lv_service->get_node_child_list
+            EXPORTING
+              pi_node_id    = lv_node_id
+            IMPORTING
+              pe_properties = lt_prop
+              pe_permission = lt_perm.
+
+        CATCH /otx/cx_rm_xecm_srv INTO l_ex_ref.
+          l_msg_text_tmp = l_ex_ref->get_text( ).
+          IF l_msg_text IS INITIAL.
+            l_msg_text = l_msg_text_tmp.
+          ELSE.
+            CONCATENATE l_msg_text l_msg_text_tmp INTO l_msg_text SEPARATED BY space.
+          ENDIF.
+      ENDTRY.
+
+      IF lt_prop IS NOT INITIAL.
+        LOOP AT lt_prop INTO ls_prop.
+          IF ls_prop-type_name = 'Folder'.
+            TRY.
+                CALL METHOD lv_service->get_node_child_list
+                  EXPORTING
+                    pi_node_id    = ls_prop-id
+                  IMPORTING
+                    pe_properties = lt_child_prop
+                    pe_permission = lt_child_perm.
+
+              CATCH /otx/cx_rm_xecm_srv INTO l_ex_ref.
+                l_msg_text_tmp = l_ex_ref->get_text( ).
+                IF l_msg_text IS INITIAL.
+                  l_msg_text = l_msg_text_tmp.
+                ELSE.
+                  CONCATENATE l_msg_text l_msg_text_tmp INTO l_msg_text SEPARATED BY space.
+                ENDIF.
+            ENDTRY.
+            IF lt_child_prop IS NOT INITIAL.
+              LOOP AT lt_child_prop INTO ls_child_prop.
+                ls_doclist-nodeid = ls_child_prop-id.
+                ls_doclist-name = ls_child_prop-name.
+                ls_doclist-mime_type = ls_child_prop-mime_type.
+                APPEND ls_doclist TO lt_doclist.
+                CLEAR: ls_doclist, ls_child_prop.
+              ENDLOOP.
+              CLEAR: lt_child_prop, lt_child_perm.
+            ENDIF.
+          ELSE.
+            ls_doclist-nodeid = ls_prop-id.
+            ls_doclist-name = ls_prop-name.
+            ls_doclist-mime_type = ls_prop-mime_type.
+            APPEND ls_doclist TO lt_doclist.
+            CLEAR ls_doclist.
+          ENDIF.
+        ENDLOOP.
+      ENDIF.
+      IF lt_doclist IS NOT INITIAL.
+        LOOP AT lt_doclist INTO ls_doclist.
+          TRY.
+              CALL METHOD lv_service->get_node_content
+                EXPORTING
+                  pi_node_id   = ls_doclist-nodeid
+                IMPORTING
+                  pe_blob      = ls_doclist-xstring
+                  pe_mime_type = ls_doclist-mime_type.
+
+            CATCH /otx/cx_rm_xecm_srv INTO l_ex_ref.
+              l_msg_text_tmp = l_ex_ref->get_text( ).
+              IF l_msg_text IS INITIAL.
+                l_msg_text = l_msg_text_tmp.
+              ELSE.
+                CONCATENATE l_msg_text l_msg_text_tmp INTO l_msg_text SEPARATED BY space.
+              ENDIF.
+          ENDTRY.
+          MODIFY lt_doclist FROM ls_doclist TRANSPORTING xstring mime_type WHERE nodeid EQ ls_doclist-nodeid.
+          CLEAR ls_doclist.
+        ENDLOOP.
+        APPEND LINES OF lt_doclist TO lt_output.
+      ELSE.
+        CONCATENATE 'No attachments / documents found for the given Workspace' im_bo_key INTO l_msg_text SEPARATED BY space.
+      ENDIF.
+    ELSE.
+      CONCATENATE 'Workspace for the given Object Type' im_bo_type 'and ID' im_bo_key 'does not exists, Please contact your administrator'
+          INTO l_msg_text SEPARATED BY space.
+    ENDIF.
+  ENDIF.
+  exp_error = l_msg_text.
+ENDFUNCTION.
