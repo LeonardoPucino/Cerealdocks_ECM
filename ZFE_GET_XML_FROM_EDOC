@@ -1,0 +1,236 @@
+FUNCTION zfe_get_xml_from_edoc.
+*"----------------------------------------------------------------------
+*"*"Interfaccia locale:
+*"  IMPORTING
+*"     REFERENCE(I_GUID) TYPE  EDOC_GUID
+*"  EXPORTING
+*"     REFERENCE(E_XML) TYPE  STRING
+*"     REFERENCE(E_XMLX) TYPE  XSTRING
+*"  TABLES
+*"      ET_RET STRUCTURE  BAPIRET2 OPTIONAL
+*"----------------------------------------------------------------------
+
+*
+*    Data    |  Commento
+* -----------|-------------------------------------------------------
+*  20180104  |  Prima realizzazione. [SDD]
+*
+
+  DATA: lo_edocument    TYPE REF TO cl_edocument,
+        lv_interface_id TYPE edoc_interface_id,
+        lv_int_version  TYPE edoc_int_version,
+        ld_source_data  TYPE REF TO data,
+        lv_ns           TYPE string,
+        lv_ifname       TYPE string,
+        lv_ifversion    TYPE string,
+        ls_finf         TYPE /aif/t_finf,
+        ld_proxy_data   TYPE REF TO data,
+        lt_ret          TYPE bapiret2 OCCURS 0 WITH HEADER LINE,
+        lx_root         TYPE REF TO cx_root,
+        lv_msg          TYPE bapi_msg.
+
+  DATA: BEGIN OF ls_interface,
+          ns        TYPE /aif/ns,
+          ifname    TYPE /aif/ifname,
+          ifversion TYPE /aif/ifversion,
+        END OF ls_interface.
+
+  FIELD-SYMBOLS: <ls_source_structure> TYPE any,
+                 <ls_proxy_input>      TYPE any,
+                 <ls_transform_input>  TYPE any.
+
+  CLEAR: et_ret, et_ret[], e_xml, e_xmlx.
+
+*** Get eDocument
+  TRY.
+
+      CALL METHOD cl_edocument=>retrieve_by_edoc_guid
+        EXPORTING
+          iv_edoc_guid = i_guid
+*         iv_skip_interface_det = ABAP_FALSE
+*         io_source    =
+*         is_edocument_db       =
+        RECEIVING
+          ro_edocument = lo_edocument.
+
+    CATCH cx_edocument .
+
+      PERFORM addmesg TABLES et_ret USING sy-msgty sy-msgid sy-msgno
+                                          sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+      EXIT.
+
+  ENDTRY.
+
+*   Get AIF interface name and version from the interface ID
+  CALL METHOD lo_edocument->determine_interface_id
+    EXPORTING
+      iv_process_step = 'SENDEDOC'
+*     iv_proc_step_variant =
+    RECEIVING
+      rv_interface_id = lv_interface_id.
+
+  TRY.
+
+      CALL METHOD cl_edocument=>determine_active_int_version
+        EXPORTING
+          iv_interface_id = lv_interface_id
+        RECEIVING
+          rv_int_version  = lv_int_version.
+    CATCH cx_edocument .
+
+      PERFORM addmesg TABLES et_ret USING sy-msgty sy-msgid sy-msgno
+                                          sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+      EXIT.
+
+  ENDTRY.
+
+*-- Get source document data
+  TRY.
+      CALL METHOD cl_edoc_map_it=>get_source_document_data
+        EXPORTING
+          io_edocument    = lo_edocument
+          iv_interface_id = lv_interface_id
+        RECEIVING
+          rd_source_data  = ld_source_data.
+    CATCH cx_edocument .
+
+      PERFORM addmesg TABLES et_ret USING sy-msgty sy-msgid sy-msgno
+                                          sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+      EXIT.
+
+  ENDTRY.
+
+  ASSIGN ld_source_data->* TO <ls_source_structure>.
+  IF sy-subrc <> 0.
+
+    PERFORM addmesg TABLES et_ret USING 'E' 'EDOCUMENT' '125'
+                                    'ld_source_data->*' '<ls_source_structure>'
+                                    'ZCL_EDOCUMENT_IT_AIF_CONNECTOR' 'DISPLAY_EDOCUMENT'.
+
+    EXIT.
+  ENDIF.
+
+  CALL METHOD cl_edoc_map_aif=>unpack_interface_id
+    EXPORTING
+      iv_interface_id = lv_interface_id
+      iv_int_version  = lv_int_version
+    IMPORTING
+      ev_ns           = lv_ns
+      ev_ifname       = lv_ifname
+      ev_ifversion    = lv_ifversion.
+
+  ls_interface-ns        = lv_ns.
+  ls_interface-ifname    = lv_ifname.
+  ls_interface-ifversion = lv_ifversion.
+
+  " Determine the proxy input structure from the AIF interface
+  SELECT SINGLE * FROM /aif/t_finf INTO ls_finf        "#EC CI_NO_TABLE
+    WHERE ns        = lv_ns
+      AND ifname    = lv_ifname
+      AND ifversion = lv_ifversion.
+
+*   Build input structures for AIF mapping and transformation to XML
+  CREATE DATA ld_proxy_data TYPE (ls_finf-ddicstructureraw).
+  ASSIGN ld_proxy_data->* TO <ls_proxy_input>.
+  ASSIGN COMPONENT ls_finf-rectyperaw OF STRUCTURE <ls_proxy_input> TO <ls_transform_input>.
+
+**   Set preview flag to prevent execution of process step
+*  CALL FUNCTION 'EDOC_IT_SET_PREVIEW_FLAG'
+*    EXPORTING
+*      iv_preview_flag = abap_true.
+
+* Call AIF to build the XML file
+  CALL FUNCTION '/AIF/FILE_TRANSFORM_DATA'
+    EXPORTING
+      ns                     = ls_interface-ns
+      ifname                 = ls_interface-ifname
+      ifversion              = ls_interface-ifversion
+      ifdirection            = 'O'   "Outbound
+      xi_flag                = 'X'
+    IMPORTING
+      out_struct             = <ls_transform_input>
+    TABLES
+      return_tab             = lt_ret
+    CHANGING
+      raw_struct             = <ls_source_structure>
+    EXCEPTIONS
+      not_found              = 1
+      customizing_incomplete = 2
+      max_errors_reached     = 3
+      cancel                 = 4
+      OTHERS                 = 5.
+
+  IF sy-subrc <> 0.
+**     Reset preview flag in case of error
+*    CALL FUNCTION 'EDOC_IT_SET_PREVIEW_FLAG'
+*      EXPORTING
+*        iv_preview_flag = abap_false.
+
+    LOOP AT lt_ret WHERE type CA 'EAX'.
+      EXIT.
+    ENDLOOP.
+
+    PERFORM addmesg TABLES et_ret
+                    USING  lt_ret-type lt_ret-id lt_ret-number
+                           lt_ret-message_v1 lt_ret-message_v2
+                           lt_ret-message_v3 lt_ret-message_v4.
+    EXIT.
+
+  ELSE.
+    CLEAR: lt_ret, lt_ret[].
+  ENDIF.
+
+  " Convert ABAP proxy structure to XML
+  TRY.
+      cl_proxy_xml_transform=>abap_to_xml_xstring(
+        EXPORTING
+          abap_data               = <ls_proxy_input>
+        RECEIVING
+          xml                     = e_xmlx
+      ).
+    CATCH cx_proxy_fault cx_transformation_error INTO lx_root.
+      lv_msg = lx_root->get_text( ).
+      PERFORM addmesg TABLES et_ret
+                      USING  'E' 'SD' '024'
+                             lv_msg(50) lv_msg+50(50)
+                             lv_msg+100(50) lv_msg+150(50).
+      EXIT.
+  ENDTRY.
+
+*** Converto in binario
+  CALL FUNCTION 'NLS_STRING_CONVERT_TO_SYS'
+    EXPORTING
+      lang_used             = sy-langu
+      source                = e_xmlx
+*     FROM_FE               = 'MS '
+    IMPORTING
+      result                = e_xml
+*     SUBSTED               =
+    EXCEPTIONS
+      illegal_syst_codepage = 1
+      no_fe_codepage_found  = 2
+      could_not_convert     = 3
+      OTHERS                = 4.
+
+  IF sy-subrc <> 0.
+
+    PERFORM addmesg TABLES et_ret USING sy-msgty sy-msgid sy-msgno
+                                        sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    EXIT.
+
+  ENDIF.
+
+***  IF i_get_split  = 'X'.
+***
+***    CALL FUNCTION 'SMUM_XML_PARSE'
+***      EXPORTING
+***        xml_input = e_xmlx
+***      TABLES
+***        xml_table = et_xml
+***        return    = lt_ret.
+***
+****** Anche 'SRTUTIL_CONVERT_XML_TO_FTABLE' può essere interessante...
+***
+***  ENDIF.
+
+ENDFUNCTION.
